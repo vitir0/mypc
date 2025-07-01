@@ -4,6 +4,7 @@ import requests
 import threading
 import time
 import asyncio
+import json  # Добавлен импорт json
 from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -18,9 +19,9 @@ from telegram.ext import (
 app = Flask(__name__)
 
 # ===== КОНФИГУРАЦИЯ (ЗАМЕНИТЕ ЭТИ ЗНАЧЕНИЯ!) =====
-BOT_TOKEN = "8004274832:AAG2gDVDp_dQLllcVBIYVB-0WTJ1Ts4CtCU"  # Например: "6123456789:AAFm0x4JxE0v5JwZz0XxXxXxXxXxXxXxXxXx"
-AUTHORIZED_USERS = [6330090175]  # Например: 123456789
-SERVER_URL = "https://https://mypc-wk16.onrender.com"  # Например: "https://my-remote-bot.onrender.com"
+BOT_TOKEN = "8004274832:AAG2gDVDp_dQLllcVBIYVB-0WTJ1Ts4CtCU"
+AUTHORIZED_USERS = [6330090175]
+SERVER_URL = "https://mypc-wk16.onrender.com"  # Убрано дублирование https://
 PORT = 10000
 # ================================================
 
@@ -318,12 +319,12 @@ def register_handlers():
     bot_app.add_handler(CallbackQueryHandler(handle_command))
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-# Веб-хук обработчик
+# Веб-хук обработчик (синхронная версия)
 @app.post(f'/{BOT_TOKEN}')
-async def webhook():
+def webhook():
     json_data = request.get_json()
     update = Update.de_json(json_data, bot_app.bot)
-    await bot_app.process_update(update)
+    bot_app.update_queue.put(update)  # Используем потокобезопасную очередь
     return '', 200
 
 # Установка веб-хука при запуске
@@ -336,6 +337,19 @@ def run_bot():
     asyncio.set_event_loop(loop)
     loop.run_until_complete(set_webhook())
     logging.info(f"Webhook установлен: {SERVER_URL}/{BOT_TOKEN}")
+    
+    # Запуск бота в фоновом потоке
+    async def bot_main():
+        await bot_app.initialize()
+        await bot_app.start()
+        await bot_app.idle()
+    
+    def start_bot():
+        asyncio.run(bot_main())
+    
+    bot_thread = threading.Thread(target=start_bot, daemon=True)
+    bot_thread.start()
+    logging.info("Бот запущен в фоновом потоке")
 
 @app.route('/')
 def index():
