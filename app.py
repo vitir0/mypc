@@ -19,7 +19,7 @@ from telegram.ext import (
 app = Flask(__name__)
 
 # ===== КОНФИГУРАЦИЯ =====
-BOT_TOKEN = "8004274832:AAG2gDVDp_dQLllcVBIYVB-0WTJ1Ts4CtCU"
+BOT_TOKEN = "8004274832:AAGbnNEvxH09Ja9OdH9KoEOFZfCl98LsqDU"
 AUTHORIZED_USERS = [6330090175]
 SERVER_URL = "https://mypc-wk16.onrender.com"
 PORT = 10000
