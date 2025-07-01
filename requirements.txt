@@ -1,0 +1,8 @@
+flask
+requests
+python-telegram-bot
+pycryptodomex
+browserhistory
+pywin32
+psutil
+pillow
