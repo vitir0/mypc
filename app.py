@@ -18,9 +18,9 @@ from telegram.ext import (
 app = Flask(__name__)
 
 # ===== КОНФИГУРАЦИЯ (ЗАМЕНИТЕ ЭТИ ЗНАЧЕНИЯ!) =====
-BOT_TOKEN = "ВАШ_ТОКЕН_БОТА"  # Например: "6123456789:AAFm0x4JxE0v5JwZz0XxXxXxXxXxXxXxXxXx"
-AUTHORIZED_USERS = [ВАШ_USER_ID]  # Например: 123456789
-SERVER_URL = "https://ВАШ_APP_NAME.onrender.com"  # Например: "https://my-remote-bot.onrender.com"
+BOT_TOKEN = "8004274832:AAG2gDVDp_dQLllcVBIYVB-0WTJ1Ts4CtCU"  # Например: "6123456789:AAFm0x4JxE0v5JwZz0XxXxXxXxXxXxXxXxXx"
+AUTHORIZED_USERS = [6330090175]  # Например: 123456789
+SERVER_URL = "https://mypc-wk16.onrender.com"  # Например: "https://my-remote-bot.onrender.com"
 # ================================================
 
 CLIENTS = {}
