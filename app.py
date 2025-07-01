@@ -6,13 +6,13 @@ import time
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters
+from telegram.ext import Updater, Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
 app = Flask(__name__)
 
 # ===== КОНФИГУРАЦИЯ =====
-TOKEN = os.environ.get('TOKEN')  # Токен из переменных окружения Render
-SECRET_KEY = os.environ.get('SECRET_KEY')  # Секретный ключ из переменных окружения
+TOKEN = os.environ.get('TOKEN')
+SECRET_KEY = os.environ.get('SECRET_KEY')
 PORT = int(os.environ.get('PORT', 5000))
 # ========================
 
@@ -20,15 +20,20 @@ bot = Bot(token=TOKEN)
 clients = {}
 pending_commands = {}
 
-# Меню управления (упрощенное)
-KEYBOARD_LAYOUT = [
-    [InlineKeyboardButton("📸 Скриншот", callback_data='screenshot')],
-    [InlineKeyboardButton("🖼 Фото на экран", callback_data='play_photo'),
-     InlineKeyboardButton("🎥 Видео на экран", callback_data='play_video')],
-    [InlineKeyboardButton("❌ Alt+F4", callback_data='altf4')],
-    [InlineKeyboardButton("🔄 Перезагрузить", callback_data='reboot'),
-     InlineKeyboardButton("⏹ Выключить", callback_data='shutdown')]
-]
+# Меню управления
+def create_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📸 Скриншот", callback_data='screenshot')],
+        [
+            InlineKeyboardButton("🖼 Фото на экран", callback_data='play_photo'),
+            InlineKeyboardButton("🎥 Видео на экран", callback_data='play_video')
+        ],
+        [InlineKeyboardButton("❌ Alt+F4", callback_data='altf4')],
+        [
+            InlineKeyboardButton("🔄 Перезагрузить", callback_data='reboot'),
+            InlineKeyboardButton("⏹ Выключить", callback_data='shutdown')
+        ]
+    ])
 
 @app.route('/heartbeat', methods=['POST'])
 def heartbeat():
@@ -52,7 +57,7 @@ def get_commands():
     if client_key != SECRET_KEY:
         return jsonify([]), 401
     
-    client_ip = request.remote_addr
+    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0]
     commands = pending_commands.get(client_ip, [])
     pending_commands[client_ip] = []
     return jsonify(commands)
@@ -64,7 +69,7 @@ def complete_command():
     if data.get('key') != SECRET_KEY:
         return jsonify({'status': 'unauthorized'}), 401
     
-    client_ip = request.remote_addr
+    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0]
     command_id = data.get('command_id')
     
     if client_ip in pending_commands:
@@ -75,26 +80,24 @@ def complete_command():
     
     return jsonify({'status': 'ok'})
 
-def send_menu(chat_id):
+async def send_menu(update: Update):
     """Отправка меню с кнопками"""
-    bot.send_message(
-        chat_id=chat_id,
-        text="🔒 Управление ноутбуком\nВыберите действие:",
-        reply_markup=InlineKeyboardMarkup(KEYBOARD_LAYOUT)
+    await update.message.reply_text(
+        "🔒 Управление ноутбуком\nВыберите действие:",
+        reply_markup=create_keyboard()
     )
 
-def button_handler(update: Update, context):
+async def button_handler(update: Update, context):
     """Обработчик нажатий кнопок"""
     query = update.callback_query
-    user_id = query.from_user.id
+    await query.answer()
     data = query.data
-    chat_id = query.message.chat_id
     
     try:
         client_id = next(iter(clients.keys()), None)
         
         if not client_id:
-            bot.send_message(chat_id, "⚠️ Нет подключенных устройств")
+            await query.message.reply_text("⚠️ Нет подключенных устройств")
             return
         
         if data == 'screenshot':
@@ -104,11 +107,12 @@ def button_handler(update: Update, context):
                 'timestamp': datetime.now().isoformat()
             }
             pending_commands.setdefault(client_id, []).append(command)
-            bot.send_message(chat_id, "📸 Запрошен скриншот...")
+            await query.message.reply_text("📸 Запрошен скриншот...")
         
         elif data in ('play_video', 'play_photo'):
             media_type = 'video' if data == 'play_video' else 'image'
-            bot.send_message(chat_id, f"📹 Отправьте {'видео' if media_type == 'video' else 'фото'} файл...")
+            text = "📹 Отправьте видео файл..." if media_type == 'video' else "🖼 Отправьте фото..."
+            await query.message.reply_text(text)
             context.user_data['awaiting_media'] = {'type': media_type, 'client': client_id}
         
         elif data == 'altf4':
@@ -118,7 +122,7 @@ def button_handler(update: Update, context):
                 'timestamp': datetime.now().isoformat()
             }
             pending_commands.setdefault(client_id, []).append(command)
-            bot.send_message(chat_id, "✅ Команда Alt+F4 отправлена")
+            await query.message.reply_text("✅ Команда Alt+F4 отправлена")
         
         elif data == 'reboot':
             command = {
@@ -127,7 +131,7 @@ def button_handler(update: Update, context):
                 'timestamp': datetime.now().isoformat()
             }
             pending_commands.setdefault(client_id, []).append(command)
-            bot.send_message(chat_id, "🔄 Команда перезагрузки отправлена")
+            await query.message.reply_text("🔄 Команда перезагрузки отправлена")
         
         elif data == 'shutdown':
             command = {
@@ -136,20 +140,17 @@ def button_handler(update: Update, context):
                 'timestamp': datetime.now().isoformat()
             }
             pending_commands.setdefault(client_id, []).append(command)
-            bot.send_message(chat_id, "⏹ Команда выключения отправлена")
-        
-        bot.answer_callback_query(query.id)
+            await query.message.reply_text("⏹ Команда выключения отправлена")
     
     except Exception as e:
-        bot.send_message(chat_id, f"⚠️ Ошибка: {str(e)}")
+        await query.message.reply_text(f"⚠️ Ошибка: {str(e)}")
 
-def media_handler(update: Update, context):
+async def media_handler(update: Update, context):
     """Обработчик медиафайлов"""
     media_info = context.user_data.get('awaiting_media')
     if not media_info:
         return
     
-    chat_id = update.message.chat_id
     client_id = media_info.get('client')
     media_type = media_info.get('type')
     
@@ -162,7 +163,7 @@ def media_handler(update: Update, context):
             file_id = update.message.video.file_id
         
         if file_id:
-            file = bot.get_file(file_id)
+            file = await bot.get_file(file_id)
             command = {
                 'id': str(uuid.uuid4()),
                 'type': 'media',
@@ -171,17 +172,17 @@ def media_handler(update: Update, context):
                 'timestamp': datetime.now().isoformat()
             }
             pending_commands.setdefault(client_id, []).append(command)
-            bot.send_message(chat_id, f"✅ {'Фото' if media_type == 'image' else 'Видео'} отправлено на устройство")
+            await update.message.reply_text(f"✅ {'Фото' if media_type == 'image' else 'Видео'} отправлено на устройство")
         
         del context.user_data['awaiting_media']
-        send_menu(chat_id)
+        await send_menu(update)
     
     except Exception as e:
-        bot.send_message(chat_id, f"⚠️ Ошибка обработки медиа: {str(e)}")
+        await update.message.reply_text(f"⚠️ Ошибка обработки медиа: {str(e)}")
 
-def start(update: Update, context):
+async def start(update: Update, context):
     """Обработчик команды /start"""
-    send_menu(update.message.chat_id)
+    await send_menu(update)
 
 def cleanup_clients():
     """Очистка неактивных клиентов"""
@@ -199,24 +200,27 @@ def cleanup_clients():
 def home():
     return "PC Control Bot is running!"
 
-def run_bot():
+async def run_bot():
     """Запуск Telegram бота"""
-    updater = Updater(token=TOKEN, use_context=True)
-    dp = updater.dispatcher
+    application = Application.builder().token(TOKEN).build()
     
-    dp.add_handler(CommandHandler('start', start))
-    dp.add_handler(CallbackQueryHandler(button_handler))
-    dp.add_handler(MessageHandler(Filters.photo | Filters.video, media_handler))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO, media_handler))
     
-    updater.start_polling()
-    updater.idle()
+    await application.run_polling()
+
+def start_bot():
+    import asyncio
+    asyncio.run(run_bot())
 
 if __name__ == '__main__':
     # Запускаем очистку клиентов в фоне
     threading.Thread(target=cleanup_clients, daemon=True).start()
     
     # Запускаем бота в отдельном потоке
-    threading.Thread(target=run_bot, daemon=True).start()
+    threading.Thread(target=start_bot, daemon=True).start()
     
     # Запускаем Flask сервер
-    app.run(host='0.0.0.0', port=PORT)
+    from waitress import serve
+    serve(app, host="0.0.0.0", port=PORT)
