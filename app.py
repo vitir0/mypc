@@ -18,9 +18,10 @@ from telegram.ext import (
 app = Flask(__name__)
 
 # ===== КОНФИГУРАЦИЯ (ЗАМЕНИТЕ ЭТИ ЗНАЧЕНИЯ!) =====
-BOT_TOKEN = "8004274832:AAG2gDVDp_dQLllcVBIYVB-0WTJ1Ts4CtCU"  # Например: "6123456789:AAFm0x4JxE0v5JwZz0XxXxXxXxXxXxXxXxXx"
-AUTHORIZED_USERS = [6330090175]  # Например: 123456789
-SERVER_URL = "https://mypc-wk16.onrender.com"  # Например: "https://my-remote-bot.onrender.com"
+BOT_TOKEN = "ВАШ_ТОКЕН_БОТА"  # Например: "6123456789:AAFm0x4JxE0v5JwZz0XxXxXxXxXxXxXxXxXx"
+AUTHORIZED_USERS = [ВАШ_USER_ID]  # Например: 123456789
+SERVER_URL = "https://ВАШ_APP_NAME.onrender.com"  # Например: "https://my-remote-bot.onrender.com"
+PORT = 10000
 # ================================================
 
 CLIENTS = {}
@@ -39,7 +40,7 @@ bot_app = Application.builder().token(BOT_TOKEN).build()
 # Очистка неактивных клиентов
 def cleanup_clients():
     while True:
-        time.sleep(300)  # Проверка каждые 5 минут
+        time.sleep(300)
         now = time.time()
         inactive = [cid for cid, cdata in CLIENTS.items() if now - cdata['last_seen'] > 1800]
         
@@ -340,15 +341,14 @@ def run_bot():
 def index():
     return "Сервер запущен. Ожидание команд."
 
-# Инициализация сервера
-def initialize_server():
-    logging.info("Сервер инициализируется...")
+if __name__ == "__main__":
+    logging.info("Сервер запускается...")
     
     # Запуск очистки неактивных клиентов
     threading.Thread(target=cleanup_clients, daemon=True).start()
     
     # Запуск бота
     run_bot()
-
-# Инициализируем сервер при импорте
-initialize_server()
+    
+    # Запуск Flask сервера
+    app.run(host='0.0.0.0', port=PORT)
