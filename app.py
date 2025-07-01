@@ -9,7 +9,7 @@ from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageH
 app = Flask(__name__)
 
 # ===== КОНФИГУРАЦИЯ =====
-TOKEN = "YOUR_BOT_TOKEN"  # Токен от @BotFather
+TOKEN = "8004274832:AAGbnNEvxH09Ja9OdH9KoEOFZfCl98LsqDU"  # Токен от @BotFather
 SECRET_KEY = "YOUR_SECRET_KEY"  # Должен совпадать с ключом на клиенте
 PORT = int(os.environ.get('PORT', 5000))
 # ========================
