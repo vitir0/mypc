@@ -6,7 +6,7 @@ import time
 import os
 from queue import Queue
 
-TOKEN = "ВАШ_ТОКЕН_БОТА"
+TOKEN = "8004274832:AAGbnNEvxH09Ja9OdH9KoEOFZfCl98LsqDU"
 SERVER_PORT = 5678
 ADMIN_ID = ВАШ_TELEGRAM_ID  # Ваш ID в Telegram
 
