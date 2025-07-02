@@ -1,5 +1,6 @@
-Flask==2.3.2
-requests==2.31.0
-waitress==3.0.0
-python-telegram-bot[job-queue]==20.3
-gunicorn
+telebot
+numpy
+sounddevice
+pillow
+opencv-python-headless
+psutil
