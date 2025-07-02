@@ -8,7 +8,7 @@ from queue import Queue
 
 TOKEN = "8004274832:AAGbnNEvxH09Ja9OdH9KoEOFZfCl98LsqDU"
 SERVER_PORT = 5678
-ADMIN_ID = ВАШ_TELEGRAM_ID  # Ваш ID в Telegram
+ADMIN_ID = 6330090175  # Ваш ID в Telegram
 
 # Глобальные переменные
 clients = {}  # {device_name: socket}
